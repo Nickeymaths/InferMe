@@ -1,0 +1,22 @@
+cmake_minimum_required(VERSION 3.24)
+project(inferMe LANGUAGES CXX CUDA)
+
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CUDA_STANDARD 17)
+set(CMAKE_CUDA_ARCHITECTURES 86)
+if(NOT CMAKE_BUILD_TYPE)
+  set(CMAKE_BUILD_TYPE Release)
+endif()
+
+find_package(CUDAToolkit REQUIRED)
+
+file(GLOB project_dirs CONFIGURE_DEPENDS ${CMAKE_SOURCE_DIR}/src/*)
+foreach(project_dir ${project_dirs})
+  if(IS_DIRECTORY ${project_dir})
+    get_filename_component(project_name ${project_dir} NAME)
+    file(GLOB sources CONFIGURE_DEPENDS ${project_dir}/*.cu ${project_dir}/*.cpp)
+    add_executable(${project_name} ${sources})
+    target_include_directories(${project_name} PRIVATE ${CMAKE_SOURCE_DIR}/common)
+    target_link_libraries(${project_name} PRIVATE CUDA::cudart CUDA::cublas)
+  endif()
+endforeach()
