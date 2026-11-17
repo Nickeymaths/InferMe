@@ -7,8 +7,8 @@ Track at `./run.sh gemm --size 4096`.
 
 | Implementation | Date | GFLOPS | % cuBLAS | Idea and what we learned |
 |---|---|---|---|---|
-| cublas | | | 100 | baseline |
-| naive | | | | one thread per C element, global memory only |
+| cublas | 2026-11-17 | 7688 | 100 | baseline (17.9 ms at 4096) |
+| naive | 2026-11-17 | 836 | 10.9 | one thread per C element, global memory only. Scaffold builds and runs; max err 3.5e-4 |
 
 ## Backlog
 - shared memory tiling
