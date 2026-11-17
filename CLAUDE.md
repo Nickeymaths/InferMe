@@ -23,3 +23,15 @@
 ## GEMM
 - Row-major FP32. Each implementation is one file `src/gemm/<name>.cu` ending with `REGISTER_GEMM(<name>, <function>);` (see `naive.cu`). No other file needs editing.
 - `./run.sh gemm [--size N] [name...]` benchmarks the named implementations (all if none named), checks each against cuBLAS, and prints ms, GFLOPS, % of cuBLAS, max error.
+
+## Workflow
+The project grows incrementally: research and Q&A with the user, then one implementation per step.
+- Every project keeps `src/<project>/NOTES.md`: goal, results table, backlog, dated research/Q&A log.
+- After each implementation: benchmark, add a row to the results table (real measured numbers only, never estimates), note what was learned, then commit.
+- One commit per implementation, message like `gemm: shared_memory_tiling, 38% of cublas`. Git history is the progress record.
+- Record durable answers from research/Q&A in the NOTES.md log, so a new session can continue without this conversation.
+- Start of a session: read `src/<project>/NOTES.md` and `git log` before proposing anything.
+
+## Status
+- Nothing has been compiled or run yet. Build the scaffold and `naive` first and fix any errors.
+- Docker needs the `docker` group in the shell that launches Claude Code (`newgrp` and `sg` are missing on this Ubuntu).

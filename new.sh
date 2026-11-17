@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Usage: ./new.sh <project>   creates src/<project>/main.cu
+# Usage: ./new.sh <project>   creates src/<project>/main.cu and NOTES.md
 set -e
 project=$1
 [ -n "$project" ] || { echo "usage: $0 <project>"; exit 1; }
@@ -13,4 +13,18 @@ cat > src/$project/main.cu <<'TEMPLATE'
 int main() {
 }
 TEMPLATE
-echo "created src/$project/main.cu"
+cat > src/$project/NOTES.md <<TEMPLATE
+# $project
+
+Goal:
+
+## Results
+
+| Implementation | Date | Result | Idea and what we learned |
+|---|---|---|---|
+
+## Backlog
+
+## Research and Q&A log
+TEMPLATE
+echo "created src/$project/main.cu and NOTES.md"
