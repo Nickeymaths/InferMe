@@ -11,6 +11,14 @@
 #include "registry.cuh"
 
 constexpr float tolerance = 1e-3f;
+constexpr int fp32_lanes_per_sm = 128;  // sm_86
+
+double peak_gflops() {
+    int sm_count, clock_khz;
+    CUDA_CHECK(cudaDeviceGetAttribute(&sm_count, cudaDevAttrMultiProcessorCount, 0));
+    CUDA_CHECK(cudaDeviceGetAttribute(&clock_khz, cudaDevAttrClockRate, 0));
+    return 2.0 * sm_count * fp32_lanes_per_sm * clock_khz * 1e-6;
+}
 
 cublasHandle_t cublas_handle;
 
@@ -81,9 +89,11 @@ int main(int argc, char** argv) {
     float cublas_ms = average_milliseconds([&] { cublas_reference(a, b, c, m, n, k); });
     double cublas_gflops = flops / (cublas_ms * 1e6);
 
-    std::printf("size %dx%dx%d\n", m, n, k);
-    std::printf("%-16s %10s %10s %10s %10s\n", "name", "ms", "GFLOPS", "%cublas", "max_err");
-    std::printf("%-16s %10.3f %10.1f %10.1f %10s\n", "cublas", cublas_ms, cublas_gflops, 100.0, "-");
+    const double peak = peak_gflops();
+    std::printf("size %dx%dx%d, peak %.1f GFLOPS\n", m, n, k, peak);
+    std::printf("%-16s %10s %10s %8s %10s %10s\n", "name", "ms", "GFLOPS", "%peak", "%cublas", "max_err");
+    std::printf("%-16s %10.3f %10.1f %8.1f %10.1f %10s\n", "cublas", cublas_ms, cublas_gflops,
+                100.0 * cublas_gflops / peak, 100.0, "-");
 
     for (const GemmEntry& entry : entries) {
         CUDA_CHECK(cudaMemset(c, 0, host_c.size() * sizeof(float)));
@@ -94,8 +104,8 @@ int main(int argc, char** argv) {
 
         float ms = average_milliseconds([&] { entry.function(a, b, c, m, n, k); });
         double gflops = flops / (ms * 1e6);
-        std::printf("%-16s %10.3f %10.1f %10.1f %10.2e%s\n", entry.name.c_str(), ms, gflops,
-                    100.0 * gflops / cublas_gflops, error, error > tolerance ? "  WRONG" : "");
+        std::printf("%-16s %10.3f %10.1f %8.1f %10.1f %10.2e%s\n", entry.name.c_str(), ms, gflops,
+                    100.0 * gflops / peak, 100.0 * gflops / cublas_gflops, error, error > tolerance ? "  WRONG" : "");
     }
 
     cudaFree(a); cudaFree(b); cudaFree(c);
