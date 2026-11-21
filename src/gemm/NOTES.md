@@ -10,7 +10,8 @@ Track at `./run.sh gemm --size 4096`. Peak = SMs x 128 lanes x 2 x max clock = 1
 | cublas | 2026-11-17 | 7711 | 59.5 | 100 | baseline (17.8 ms at 4096) |
 | naive | 2026-11-17 | 840 | 6.5 | 10.9 | one thread per C element, global memory only. Scaffold builds and runs; max err 3.5e-4 |
 | register_blocking | 2026-11-19 | 3641 | 28.1 | 47.8 | 8x8 C tile per thread, 16x16 threads per block, no shared memory. 4.4x over naive. ncu: FMA now the top pipeline (38%), issue slots 46% busy, 96 regs/thread, 33% occupancy. Requires m, n multiples of 128 |
-| shared_memory_tiling | 2026-11-21 | 4758 | 36.7 | 62.1 | 128x128 block tile, BK=8, A and B tiles staged in shared memory with coalesced loads, same 8x8 register tile. 1.30x over register_blocking. Not yet profiled. Requires m, n multiples of 128 and k multiple of 8 |
+| shared_memory_tiling (scalar LDS, 75225b8) | 2026-11-21 | 4758 | 36.7 | 62.1 | 128x128 block tile, BK=8, A and B tiles staged in shared memory with coalesced loads, same 8x8 register tile. 1.30x over register_blocking. ncu: LSU pipe 72% (FMA 34%), 16 scalar LDS per 64 FMA, 33.5M of 100.7M shared-load wavefronts are bank conflicts (a_frag, 2-way), global loads 32/32 B per sector. Requires m, n multiples of 128 and k multiple of 8 |
+| shared_memory_tiling (vectorized LDS.128) | 2026-11-22 | 7209 | 55.7 | 96.2 | same tiling, but a_tile stored transposed [BK][128] and each thread owns columns tx*4..+3 and 64+tx*4..+3, so fragments load as 4 LDS.128 per 64 FMA instead of 16 LDS.32. 1.52x over the scalar version. 125 regs, no spills. Not yet profiled |
 
 ## Backlog
 - vectorized global loads
@@ -38,3 +39,8 @@ Track at `./run.sh gemm --size 4096`. Peak = SMs x 128 lanes x 2 x max clock = 1
 - Occupancy numbers: sm_86 holds at most 48 resident warps per SM (12 per scheduler). A scheduler issues 1 warp-instruction per cycle but picks from its resident pool. The kernel gets 16 warps per SM (4 per scheduler) from the register limit.
 - Tiling design: a one-k-slice shared buffer would need 2 syncs per 64 FMAs and strided A loads, so the tile is BK=8 deep.
 - Possible bank conflicts in shared_memory_tiling: a_tile reads (stride BK between rows, two ty rows per warp) may be 2-way conflicted; padding the row to BK+1 would fix it. Profile before changing.
+
+### 2026-11-22 vectorized shared loads
+- shared_memory_tiling (scalar) profile: LSU instruction pipe is the limit again (72%), not latency. Cause is 16 LDS.32 per 64 FMA, so fewer and wider loads are needed, not just conflict-free ones.
+- One LDS.128 loads 4 contiguous floats, so the fragment must be contiguous in shared memory. A: transpose the tile to [k][m]; filling it costs one float4 global load (4 consecutive k) plus 4 scalar stores. B: columns tx*4..+3 and 64+tx*4..+3 per thread; 8 contiguous columns would put neighbouring threads 32 B apart and conflict within a quarter-warp.
+- Remaining known issues: the transposed A stores are 2-way bank conflicted (minor, 4 stores per tile; padding the row to BLOCK_M+4 fixes it), occupancy still register-limited (125 regs, about 33%), global loads not overlapped with compute (next: double buffering). Profile this version before choosing.
