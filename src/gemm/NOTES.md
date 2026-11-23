@@ -12,6 +12,7 @@ Track at `./run.sh gemm --size 4096`. Peak = SMs x 128 lanes x 2 x max clock = 1
 | register_blocking | 2026-11-19 | 3641 | 28.1 | 47.8 | 8x8 C tile per thread, 16x16 threads per block, no shared memory. 4.4x over naive. ncu: FMA now the top pipeline (38%), issue slots 46% busy, 96 regs/thread, 33% occupancy. Requires m, n multiples of 128 |
 | shared_memory_tiling (scalar LDS, 75225b8) | 2026-11-21 | 4758 | 36.7 | 62.1 | 128x128 block tile, BK=8, A and B tiles staged in shared memory with coalesced loads, same 8x8 register tile. 1.30x over register_blocking. ncu: LSU pipe 72% (FMA 34%), 16 scalar LDS per 64 FMA, 33.5M of 100.7M shared-load wavefronts are bank conflicts (a_frag, 2-way), global loads 32/32 B per sector. Requires m, n multiples of 128 and k multiple of 8 |
 | shared_memory_tiling (vectorized LDS.128) | 2026-11-22 | 7209 | 55.7 | 96.2 | same tiling, but a_tile stored transposed [BK][128] and each thread owns columns tx*4..+3 and 64+tx*4..+3, so fragments load as 4 LDS.128 per 64 FMA instead of 16 LDS.32. 1.52x over the scalar version. 125 regs, no spills. Not yet profiled |
+| shared_memory_tiling (conflict-free a_tile, LDS.128 b_frag, STG.128 C) | 2026-11-23 | 5794 | 44.7 | 75.1 | a_tile row padded to BLOCK_M+4 (0 bank conflicts); each thread owns columns tx*4..+3 and 64+tx*4..+3 so b_frag is 2 LDS.128 and C is written with 16 STG.128. 1.22x over the scalar version. SASS has 0 scalar LDS. 119 regs. ncu (2048): 392M instructions issued (was 417M), FMA 48%, LSU 33% (was 61%), issue active 63%, no bank conflicts. Stalls now led by long scoreboard 1.12 (global loads) and short scoreboard 0.93; mio_throttle fell 0.80 to 0.08. Max err 3.5e-4 at 4096 |
 
 ## Backlog
 - vectorized global loads
@@ -44,3 +45,15 @@ Track at `./run.sh gemm --size 4096`. Peak = SMs x 128 lanes x 2 x max clock = 1
 - shared_memory_tiling (scalar) profile: LSU instruction pipe is the limit again (72%), not latency. Cause is 16 LDS.32 per 64 FMA, so fewer and wider loads are needed, not just conflict-free ones.
 - One LDS.128 loads 4 contiguous floats, so the fragment must be contiguous in shared memory. A: transpose the tile to [k][m]; filling it costs one float4 global load (4 consecutive k) plus 4 scalar stores. B: columns tx*4..+3 and 64+tx*4..+3 per thread; 8 contiguous columns would put neighbouring threads 32 B apart and conflict within a quarter-warp.
 - Remaining known issues: the transposed A stores are 2-way bank conflicted (minor, 4 stores per tile; padding the row to BLOCK_M+4 fixes it), occupancy still register-limited (125 regs, about 33%), global loads not overlapped with compute (next: double buffering). Profile this version before choosing.
+
+### 2026-11-23 profile of bank-conflict-free scalar version (size 2048, uncommitted a_tile[BK][BLOCK_M+4])
+- Shared-load bank conflicts: 0 (was 33.5M of 100.7M wavefronts). Shared loads executed 41.9M, not 67M: the compiler already fuses the 8 contiguous a_frag floats into 2 LDS.128, leaving 8 scalar LDS.32 for b_frag (stride THREADS, cannot be fused). So 10 LDS per 64 FMA.
+- Issue slots busy 63%, FMA pipe 44.5%, LSU 61%. 417M instructions issued vs 268M FMA, so 36% of issue slots are not FMA.
+- Stalls per issued instruction (6.0 total): short scoreboard 1.7 (waiting on LDS results), mio_throttle 0.8, long scoreboard 0.7 (global loads), wait 0.58, barrier 0.40. Eligible warps 1.71 per scheduler; occupancy 33% (117 regs, 2 blocks per SM).
+- Conclusion: still instruction-issue and shared-load-latency bound, not conflict bound. Next: vectorize b_frag (columns tx*4..+3 and 64+tx*4..+3) to remove the 8 scalar LDS.
+
+### 2026-11-23 result of vectorizing b_frag and C stores
+- 4096: 5794 GFLOPS, 75.1% of cublas. LSU pipe dropped 61% to 33% and mio_throttle nearly vanished, so the shared-load path is no longer the bottleneck. FMA only reached 48% though.
+- Remaining stalls: long scoreboard 1.12 (global loads not overlapped with compute), short scoreboard 0.93, barrier 0.40. Still 33% occupancy (119 regs).
+- The earlier 96% version also had float4 global tile loads, so the 75% to 96% gap is probably the global-load side (Step 2) plus its effect on latency. Hypothesis, not measured.
+- Next: vectorize the global-to-shared tile fills (one float4 global load per thread for A and B), then double buffering.
