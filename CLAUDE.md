@@ -19,6 +19,7 @@
 - `src/<project>/*.cu` becomes the executable `<project>` automatically (CMake globs it).
 - `common/` holds shared headers: `cuda_check.cuh` (CUDA_CHECK, CUBLAS_CHECK), `benchmark.cuh` (average_milliseconds).
 - `./new.sh <project>` creates a project; `docker compose run --rm cuda ./run.sh <project> [args]` builds and runs it.
+- `docker compose run --rm cuda ./profile.sh <project> [args]` runs full ncu (set `KERNEL=regex:...` to pick a kernel) and writes report, details, per-instruction SASS stall CSV, cuobjdump SASS and register usage to `profiles/`. Build uses `-lineinfo`.
 
 ## GEMM
 - Row-major FP32. Each implementation is one file `src/gemm/<name>.cu` ending with `REGISTER_GEMM(<name>, <function>);` (see `naive.cu`). No other file needs editing.
