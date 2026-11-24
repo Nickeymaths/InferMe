@@ -13,6 +13,7 @@ Track at `./run.sh gemm --size 4096`. Peak = SMs x 128 lanes x 2 x max clock = 1
 | shared_memory_tiling (scalar LDS, 75225b8) | 2026-11-21 | 4758 | 36.7 | 62.1 | 128x128 block tile, BK=8, A and B tiles staged in shared memory with coalesced loads, same 8x8 register tile. 1.30x over register_blocking. ncu: LSU pipe 72% (FMA 34%), 16 scalar LDS per 64 FMA, 33.5M of 100.7M shared-load wavefronts are bank conflicts (a_frag, 2-way), global loads 32/32 B per sector. Requires m, n multiples of 128 and k multiple of 8 |
 | shared_memory_tiling (vectorized LDS.128) | 2026-11-22 | 7209 | 55.7 | 96.2 | same tiling, but a_tile stored transposed [BK][128] and each thread owns columns tx*4..+3 and 64+tx*4..+3, so fragments load as 4 LDS.128 per 64 FMA instead of 16 LDS.32. 1.52x over the scalar version. 125 regs, no spills. Not yet profiled |
 | shared_memory_tiling (conflict-free a_tile, LDS.128 b_frag, STG.128 C) | 2026-11-23 | 5794 | 44.7 | 75.1 | a_tile row padded to BLOCK_M+4 (0 bank conflicts); each thread owns columns tx*4..+3 and 64+tx*4..+3 so b_frag is 2 LDS.128 and C is written with 16 STG.128. 1.22x over the scalar version. SASS has 0 scalar LDS. 119 regs. ncu (2048): 392M instructions issued (was 417M), FMA 48%, LSU 33% (was 61%), issue active 63%, no bank conflicts. Stalls now led by long scoreboard 1.12 (global loads) and short scoreboard 0.93; mio_throttle fell 0.80 to 0.08. Max err 3.5e-4 at 4096 |
+| shared_memory_tiling (float4 global tile loads) | 2026-11-24 | 7305 | 56.4 | 96.6 | one float4 global load per thread for A (then 4 scalar transposed STS) and for B (one STS.128), replacing the strided scalar fill loops. 1.26x over the previous step. ncu (2048): 301M instructions issued (was 392M), FMA 58%, LSU 36%, issue active 65%, 125 regs, 0 bank conflicts on loads and stores. Stalls: long scoreboard 0.77 (was 1.12), short scoreboard 0.66, barrier 0.63, mio_throttle 0.18 |
 
 ## Backlog
 - vectorized global loads
@@ -57,3 +58,7 @@ Track at `./run.sh gemm --size 4096`. Peak = SMs x 128 lanes x 2 x max clock = 1
 - Remaining stalls: long scoreboard 1.12 (global loads not overlapped with compute), short scoreboard 0.93, barrier 0.40. Still 33% occupancy (119 regs).
 - The earlier 96% version also had float4 global tile loads, so the 75% to 96% gap is probably the global-load side (Step 2) plus its effect on latency. Hypothesis, not measured.
 - Next: vectorize the global-to-shared tile fills (one float4 global load per thread for A and B), then double buffering.
+
+### 2026-11-24 result of vectorizing the global tile loads
+- 4096: 7305 GFLOPS, 96.6% of cublas, confirming that the 75% to 96% gap was the global-load side (instruction count 392M to 301M).
+- Barrier stall rose to 0.63 and long scoreboard is still 0.77: loads are issued then waited on before the same iteration's compute, so double buffering is the natural next step. Occupancy still 33% (125 regs); FMA pipe at 58%.
