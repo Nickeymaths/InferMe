@@ -6,7 +6,7 @@ FROM nvidia/cuda:${CUDA_TAG}
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y --no-install-recommends \
       build-essential cmake ninja-build gdb git curl vim ca-certificates \
-      python3 python3-pip python3-venv clang-format \
+      python3 python3-pip python3-venv python3-matplotlib clang-format \
     && rm -rf /var/lib/apt/lists/*
 
 # Match host UID/GID so files in the bind mount aren't root-owned
