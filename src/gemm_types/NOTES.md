@@ -11,11 +11,12 @@ Layout: `tiled_kernel.cuh` (one kernel template, inputs converted to the accumul
 | tf32 / fp32 | 13290 | 8252, 8287, 8284 | 62 | 1.9e-3 | cuBLAS `CUBLAS_COMPUTE_32F_FAST_TF32`. Our kernel is the FP32 kernel on inputs with the low 13 mantissa bits cleared (8330 in gemm for plain fp32, so the template costs nothing) |
 | bf16 / fp32 | 24255, 26265, 26211 | 8706, 8704, 8718 | 33 to 36 | 9.8e-4 | cuBLAS kernel `ampere_s1688gemm_bf16_128x128_ldg8_stages_32x1_nn`, tensor pipe used. Ours converts bf16 to float on the shared-memory store |
 | int8 / int32 | 89410, 88304, 89157 | 6479, 6475, 6495 | 7.2 to 7.3 | 0 (exact) | cuBLAS with B transposed (TN), tensor pipe used. Ours is plain int multiply-add (IMAD), no dp4a |
+| int8 dp4a / int32 | 89442, 89057, 88728 | 23155, 23170, 23165 | 26 | 0 (exact) | `int8_dp4a.cu`: same 128x128 tile, 8x8 thread tile, k tile 32. 3.6x over the IMAD kernel; 89% of the 25.9 Tops dp4a peak; 23315 at 8192. See log below |
 
 Run to run, cuBLAS bf16 moved 24255 to 26265; the other rows are within 1%.
 
 ## Backlog
-- int8 CUDA-core with `__dp4a` (4 MACs per instruction); needs A and B packed along k, so B must be transposed when staged into shared memory. cuBLAS's own dp4a kernel reached 25.9 Tops (below), which is the target to beat.
+- Close the remaining 11% of the dp4a peak (profile `int8_dp4a`: stalls, issue slots; k tile 16 and 64 untested).
 - Hand-written tensor-core kernels (`mma.sync` m16n8k16 for bf16 and int8, m16n8k8 for tf32) to see how much of cuBLAS a simple kernel reaches.
 
 ## Research and Q&A log
@@ -36,3 +37,9 @@ Run to run, cuBLAS bf16 moved 24255 to 26265; the other rows are within 1%.
 
 ### 2026-11-24 harness checks
 - Error check keeps NaN and flags WRONG on `!(error <= tolerance)`. Tolerance is `tolerance_per_k * k` with 2e-6 for bf16 and tf32 (error grows slightly faster than linear in k; 8192: tf32 5.8e-3, bf16 2.6e-3, limit 1.6e-2). Size must be a positive multiple of 128; unknown type names and a missing `--size` value exit 1.
+
+### 2026-11-24 int8 dp4a kernel
+- Correction: the dp4a peak is 4 MAC x 64 instr/clk/SM x 2 ops x 28 SMs x 1.807 GHz = 25.9 Tops, not 12.9. cuBLAS's NN-layout kernel (`ampere_igemm_int8`, 25.9 Tops) therefore sits at the dp4a peak, and there was no discrepancy. dp4a at 64/clk/SM is consistent with both measurements (hypothesis from arithmetic, not profiled).
+- Design: `__dp4a` takes 4 packed int8 along k for both operands. A is row-major so 4 consecutive k are already contiguous: one 16 B load per thread, stored to shared as ints transposed `a_tile[k group][row]` (row padded +4, same as the fp32 kernel) so a_frag is 2 LDS.128. B is [k][n], so each thread loads 4 k rows x 4 columns (4 LDG.32, coalesced across columns), transposes the 4x4 bytes with 8 PRMT and stores 4 packed ints with one STS.128 to `b_tile[k group][col]`. Inner loop: per k group 4 LDS.128 and 64 dp4a, i.e. 4x fewer shared loads per MAC than the fp32 kernel.
+- SASS: 512 IDP.4A, 32 LDS.128, 1 STS.128, 4 scalar STS, 8 PRMT, 2 BAR per loop trip; 117 regs, no spills, 8.3 KB shared. Exact result vs cuBLAS TN tensor-core kernel.
+- Result: 4096 23.16 Tops (three runs), 8192 23.3 Tops, 3.6x over IMAD. Tensor-core cuBLAS is 3.8x faster still (89 Tops).
