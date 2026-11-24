@@ -16,8 +16,6 @@ Track at `./run.sh gemm --size 4096`. Peak = SMs x 128 lanes x 2 x max clock = 1
 | shared_memory_tiling (float4 global tile loads) | 2026-11-24 | 7305 | 56.4 | 96.6 | one float4 global load per thread for A (then 4 scalar transposed STS) and for B (one STS.128), replacing the strided scalar fill loops. 1.26x over the previous step. ncu (2048): 301M instructions issued (was 392M), FMA 58%, LSU 36%, issue active 65%, 125 regs, 0 bank conflicts on loads and stores. Stalls: long scoreboard 0.77 (was 1.12), short scoreboard 0.66, barrier 0.63, mio_throttle 0.18 |
 
 ## Backlog
-- vectorized global loads
-- double buffering
 - warp tiling
 
 ## Research and Q&A log
@@ -62,3 +60,9 @@ Track at `./run.sh gemm --size 4096`. Peak = SMs x 128 lanes x 2 x max clock = 1
 ### 2026-11-24 result of vectorizing the global tile loads
 - 4096: 7305 GFLOPS, 96.6% of cublas, confirming that the 75% to 96% gap was the global-load side (instruction count 392M to 301M).
 - Barrier stall rose to 0.63 and long scoreboard is still 0.77: loads are issued then waited on before the same iteration's compute, so double buffering is the natural next step. Occupancy still 33% (125 regs); FMA pipe at 58%.
+
+### 2026-11-24 double buffering tried, not worth it
+- Implemented on top of the float4-load version: a_tile and b_tile doubled, next tile's float4 loads issued into registers before compute and stored into the other buffer after, one `__syncthreads()` per iteration instead of two. Correct (max err 3.47e-4).
+- 4096, same session, GFLOPS (% cublas): double buffered 7410 (96.1), 7390 (96.1), 7355 (95.9), 7311 (94.8); single buffered 7461 (97.2), 7133 (94.0), 7427 (96.3). cublas itself moved 7591 to 7714 between runs, so run-to-run noise is about 3%, larger than any difference. No measurable gain, possibly slightly worse.
+- Likely reasons (hypotheses, not profiled): occupancy is 33% (125 regs, 2 blocks per SM), so while one block waits on a barrier or a global load the other issues FMAs, which already hides the latency double buffering targets. The prefetch registers (float4 for A and B) add register pressure for little return.
+- Decision: code removed, kept simple. Revisit only if warp tiling or lower register use changes occupancy, and profile (barrier and long scoreboard stalls, regs) before trying again.
