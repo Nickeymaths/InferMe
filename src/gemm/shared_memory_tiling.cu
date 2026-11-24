@@ -6,6 +6,7 @@ constexpr int TN = 8;
 constexpr int BLOCK_M = THREADS * TM;
 constexpr int BLOCK_N = THREADS * TN;
 constexpr int BK = 8;
+constexpr int VEC = 4;
 constexpr int BLOCK_THREADS = THREADS * THREADS;
 
 // Requires m and n to be multiples of 128 and k a multiple of 8.
@@ -17,7 +18,7 @@ __global__ void shared_memory_tiling_kernel(const float* a, const float* b, floa
     const float* a_block = a + blockIdx.y * BLOCK_M * k;
     const float* b_block = b + blockIdx.x * BLOCK_N;
 
-    float acc[TM][TN] = {};
+    alignas(16) float acc[TM][TN] = {};
     for (int k0 = 0; k0 < k; k0 += BK) {
         for (int idx = tid; idx < BLOCK_M * BK; idx += BLOCK_THREADS)
             a_tile[idx % BK][idx / BK] = a_block[(idx / BK) * k + k0 + idx % BK];
@@ -26,11 +27,11 @@ __global__ void shared_memory_tiling_kernel(const float* a, const float* b, floa
         __syncthreads();
 
         for (int i = 0; i < BK; i++) {
-            float a_frag[TM], b_frag[TN];
+            alignas(16) float a_frag[TM], b_frag[TN];
             for (int r = 0; r < TM; r++) a_frag[r] = a_tile[i][threadIdx.y * TM + r];
-            for (int h = 0; h < 2; h++)
+            for (int h = 0; h < TN / VEC; h++)
                 reinterpret_cast<float4*>(b_frag)[h] =
-                    *reinterpret_cast<const float4*>(&b_tile[i][h * BLOCK_N / 2 + threadIdx.x * 4]);
+                    *reinterpret_cast<const float4*>(&b_tile[i][threadIdx.x * VEC + h * VEC * THREADS]);
             for (int r = 0; r < TM; r++)
                 for (int j = 0; j < TN; j++) acc[r][j] += a_frag[r] * b_frag[j];
         }
@@ -38,10 +39,10 @@ __global__ void shared_memory_tiling_kernel(const float* a, const float* b, floa
     }
 
     int row0 = blockIdx.y * BLOCK_M + threadIdx.y * TM;
-    int col0 = blockIdx.x * BLOCK_N + threadIdx.x * 4;
+    int col0 = blockIdx.x * BLOCK_N + threadIdx.x * VEC;
     for (int r = 0; r < TM; r++)
-        for (int h = 0; h < 2; h++)
-            *reinterpret_cast<float4*>(&c[(row0 + r) * n + col0 + h * BLOCK_N / 2]) =
+        for (int h = 0; h < TN / VEC; h++)
+            *reinterpret_cast<float4*>(&c[(row0 + r) * n + col0 + h * VEC * THREADS]) =
                 reinterpret_cast<float4*>(acc[r])[h];
 }
 
