@@ -18,7 +18,7 @@ float truncate_to_tf32(float x) {
 }
 
 void run_tf32(int size) {
-    compare_with_cublas<float, float>("tf32 in, fp32 accumulate and out", size, truncate_to_tf32, 1e-2,
+    compare_with_cublas<float, float>("tf32 in, fp32 accumulate and out", size, truncate_to_tf32, 2e-6,
                                       tiled_gemm<float, float>, cublas_tf32);
 }
 

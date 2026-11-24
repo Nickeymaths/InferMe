@@ -40,11 +40,12 @@ using GemmFunction = void (*)(const In* a, const In* b, Out* c, int m, int n, in
 // Row-major C = A * B with A m x k and B k x n, our kernel against a cuBLAS call on the same data.
 // With cublas_wants_transposed_b, the cuBLAS function gets B as n x k row-major instead.
 template <typename In, typename Out>
-void compare_with_cublas(const char* name, int size, In (*make_input)(float), double tolerance,
+void compare_with_cublas(const char* name, int size, In (*make_input)(float), double tolerance_per_k,
                          GemmFunction<In, Out> ours, GemmFunction<In, Out> cublas,
                          bool cublas_wants_transposed_b = false) {
     const int m = size, n = size, k = size;
     const double ops = 2.0 * m * n * k;
+    const double tolerance = tolerance_per_k * k;
 
     std::mt19937 generator(1);
     std::uniform_real_distribution<float> distribution(-1.f, 1.f);
@@ -83,8 +84,10 @@ void compare_with_cublas(const char* name, int size, In (*make_input)(float), do
     CUDA_CHECK(cudaGetLastError());
     CUDA_CHECK(cudaMemcpy(host_ours.data(), c, host_ours.size() * sizeof(Out), cudaMemcpyDeviceToHost));
     double error = 0;
-    for (size_t i = 0; i < host_ours.size(); i++)
-        error = std::fmax(error, std::fabs((double)host_ours[i] - (double)host_cublas[i]));
+    for (size_t i = 0; i < host_ours.size(); i++) {
+        double difference = std::fabs((double)host_ours[i] - (double)host_cublas[i]);
+        if (!(difference <= error)) error = difference;  // also keeps NaN
+    }
     float ours_ms = average_milliseconds([&] { ours(a, b, c, m, n, k); });
     double ours_rate = ops / (ours_ms * 1e6);
 
@@ -92,7 +95,7 @@ void compare_with_cublas(const char* name, int size, In (*make_input)(float), do
     std::printf("  %-10s %10s %12s %10s %10s\n", "", "ms", "Gop/s", "%cublas", "max_err");
     std::printf("  %-10s %10.3f %12.1f %10.1f %10s\n", "cublas", cublas_ms, cublas_rate, 100.0, "-");
     std::printf("  %-10s %10.3f %12.1f %10.1f %10.2e%s\n", "cuda_core", ours_ms, ours_rate,
-                100.0 * ours_rate / cublas_rate, error, error > tolerance ? "  WRONG" : "");
+                100.0 * ours_rate / cublas_rate, error, error <= tolerance ? "" : "  WRONG");
 
     cudaFree(a); cudaFree(b); cudaFree(c);
     if (cublas_wants_transposed_b) cudaFree(cublas_b);

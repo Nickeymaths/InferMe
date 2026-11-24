@@ -29,3 +29,10 @@ Run to run, cuBLAS bf16 moved 24255 to 26265; the other rows are within 1%.
 - int8 cuda_core at 6480 Gop/s is about half of the 12953 FP32 peak (6476). Consistent with INT32 IMAD running at 64 lanes per SM instead of 128 (hypothesis from the arithmetic, not profiled).
 - bf16 cuda_core (8706) is a bit above the FP32 kernel (8330, tf32 row 8270): same FMA count but half the global load bytes. Not profiled.
 - tf32 and bf16 errors vs cuBLAS (1.9e-3, 9.8e-4 on outputs of magnitude ~20) are accumulation-order differences, since both sides multiply identical rounded inputs.
+
+### 2026-11-24 why bf16 converts to fp32 on CUDA cores
+- The only native CUDA-core bf16 FMA is packed `__hfma2_bf16`, whose accumulator is bf16 too. No CUDA-core instruction does bf16 inputs into an fp32 accumulator (that is the tensor core form). cuBLAS bf16 accumulates in fp32, and a bf16 accumulator over k=4096 (partial sums near 20, bf16 step near 0.1) is mostly rounding noise, so fp32 FMA after a once-per-tile convert is the comparable kernel.
+- Int8 is the opposite case: `__dp4a` keeps an exact int32 accumulator, so it is a valid CUDA-core improvement (backlog).
+
+### 2026-11-24 harness checks
+- Error check keeps NaN and flags WRONG on `!(error <= tolerance)`. Tolerance is `tolerance_per_k * k` with 2e-6 for bf16 and tf32 (error grows slightly faster than linear in k; 8192: tf32 5.8e-3, bf16 2.6e-3, limit 1.6e-2). Size must be a positive multiple of 128; unknown type names and a missing `--size` value exit 1.
