@@ -5,14 +5,15 @@ constexpr int TM = 8;
 constexpr int TN = 8;
 constexpr int BLOCK_M = THREADS * TM;
 constexpr int BLOCK_N = THREADS * TN;
-constexpr int BK = 8;
+constexpr int BK = 16;
 constexpr int VEC = 4;
 constexpr int BLOCK_THREADS = THREADS * THREADS;
 
-static_assert(BLOCK_M * BK == VEC * BLOCK_THREADS && BK * BLOCK_N == VEC * BLOCK_THREADS,
-              "each thread loads exactly one float4 of A and one of B per tile");
+constexpr int LOADS = BLOCK_M * BK / (VEC * BLOCK_THREADS);
+static_assert(BLOCK_M * BK == BK * BLOCK_N && BLOCK_M * BK % (VEC * BLOCK_THREADS) == 0,
+              "each thread loads LOADS whole float4s of A and of B per tile");
 
-// Requires m and n to be multiples of 128 and k a multiple of 8.
+// Requires m and n to be multiples of 128 and k a multiple of 16.
 __global__ void shared_memory_tiling_kernel(const float* a, const float* b, float* c, int m, int n, int k) {
     __shared__ __align__(16) float a_tile[BK][BLOCK_M+4];
     __shared__ __align__(16) float b_tile[BK][BLOCK_N];
@@ -21,18 +22,21 @@ __global__ void shared_memory_tiling_kernel(const float* a, const float* b, floa
     const float* a_block = a + blockIdx.y * BLOCK_M * k;
     const float* b_block = b + blockIdx.x * BLOCK_N;
 
-    int a_row = tid / (BK / VEC), a_k = tid % (BK / VEC) * VEC;
-    int b_k = tid / (BLOCK_N / VEC), b_col = tid % (BLOCK_N / VEC) * VEC;
 
     alignas(16) float acc[TM][TN] = {};
     for (int k0 = 0; k0 < k; k0 += BK) {
-        float4 a_vals = *reinterpret_cast<const float4*>(&a_block[a_row * k + k0 + a_k]);
-        a_tile[a_k + 0][a_row] = a_vals.x;
-        a_tile[a_k + 1][a_row] = a_vals.y;
-        a_tile[a_k + 2][a_row] = a_vals.z;
-        a_tile[a_k + 3][a_row] = a_vals.w;
-        *reinterpret_cast<float4*>(&b_tile[b_k][b_col]) =
-            *reinterpret_cast<const float4*>(&b_block[(k0 + b_k) * n + b_col]);
+        for (int l = 0; l < LOADS; l++) {
+            int idx = tid + l * BLOCK_THREADS;
+            int a_row = idx / (BK / VEC), a_k = idx % (BK / VEC) * VEC;
+            int b_k = idx / (BLOCK_N / VEC), b_col = idx % (BLOCK_N / VEC) * VEC;
+            float4 a_vals = *reinterpret_cast<const float4*>(&a_block[a_row * k + k0 + a_k]);
+            a_tile[a_k + 0][a_row] = a_vals.x;
+            a_tile[a_k + 1][a_row] = a_vals.y;
+            a_tile[a_k + 2][a_row] = a_vals.z;
+            a_tile[a_k + 3][a_row] = a_vals.w;
+            *reinterpret_cast<float4*>(&b_tile[b_k][b_col]) =
+                *reinterpret_cast<const float4*>(&b_block[(k0 + b_k) * n + b_col]);
+        }
         __syncthreads();
 
         for (int i = 0; i < BK; i++) {
